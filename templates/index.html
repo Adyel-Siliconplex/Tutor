@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Habib Higher Secondary AI Tutor System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 class="app-title">Habib Higher Secondary AI Tutor System</h1>
+            <p class="subtitle">Select a subject to begin learning</p>
+        </header>
+        
+        <div class="subjects-grid">
+            <div class="subject-card" onclick="selectSubject('Computer')">
+                <div class="subject-icon">💻</div>
+                <h2 class="subject-name">Computer</h2>
+                <p class="subject-description">Learn computer science concepts and programming</p>
+            </div>
+            
+            <div class="subject-card" onclick="selectSubject('Math')">
+                <div class="subject-icon">📐</div>
+                <h2 class="subject-name">Math</h2>
+                <p class="subject-description">Master mathematical concepts and problem-solving</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function selectSubject(subject) {
+            window.location.href = `/chat/${subject}`;
+        }
+    </script>
+</body>
+</html>
+

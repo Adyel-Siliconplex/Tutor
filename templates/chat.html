@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ subject }} - Habib AI Tutor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="chat-body">
+    <div class="chat-container">
+        <header class="chat-header">
+            <div class="header-content">
+                <button class="back-button" onclick="goHome()">← Back</button>
+                <h1 class="chat-title">Habib AI Tutor - {{ subject }}</h1>
+            </div>
+        </header>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="welcome-message">
+                <p>👋 Hello! I'm Habib, your AI tutor for {{ subject }}. I'm here to help you learn. Feel free to ask me any questions about {{ subject }}!</p>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="input-wrapper">
+                <textarea 
+                    id="messageInput" 
+                    placeholder="Ask a question about {{ subject }}..."
+                    rows="1"
+                    onkeydown="handleKeyPress(event)"
+                ></textarea>
+                <button id="sendButton" onclick="sendMessage()" class="send-button">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const subject = '{{ subject }}';
+        let conversationId = null;
+    </script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
