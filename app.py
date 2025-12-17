@@ -4,9 +4,10 @@ from pymongo import MongoClient
 from openai import OpenAI
 import uuid
 from datetime import datetime
+import numpy as np
 from config import (
     MONGODB_URI, DATABASE_NAME, COLLECTIONS, 
-    OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, OPENAI_CHAT_MODEL,
+    OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, OPENAI_EMBEDDING_DIMENSIONS, OPENAI_CHAT_MODEL,  # Added OPENAI_EMBEDDING_DIMENSIONS
     VECTOR_SEARCH_INDEX_NAME, MATH_INDEX_NAME, TOP_K_RESULTS
 )
 
@@ -28,11 +29,12 @@ except Exception as e:
 
 
 def generate_embedding(text):
-    """Generate embedding using OpenAI text-embedding-3-small model"""
+    """Generate embedding using OpenAI text-embedding-3-large model to match document format"""
     try:
         response = openai_client.embeddings.create(
             model=OPENAI_EMBEDDING_MODEL,
-            input=text
+            input=text,
+            dimensions=OPENAI_EMBEDDING_DIMENSIONS  # Specify dimensions to match documents
         )
         return response.data[0].embedding
     except Exception as e:
@@ -40,65 +42,104 @@ def generate_embedding(text):
         return None
 
 
+def cosine_similarity(vec1, vec2):
+    """Calculate cosine similarity between two vectors"""
+    vec1 = np.array(vec1)
+    vec2 = np.array(vec2)
+    dot_product = np.dot(vec1, vec2)
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0
+    return dot_product / (norm1 * norm2)
+
+
 def vector_search(collection_name, query_embedding, limit=TOP_K_RESULTS):
-    """Perform vector search in MongoDB collection using Atlas Vector Search"""
+    """Perform vector search using manual cosine similarity calculation"""
     try:
         collection = db[collection_name]
         
-        # Use different index name for Math collection
-        if collection_name == 'Math':
-            index_name = MATH_INDEX_NAME
-        else:
-            index_name = VECTOR_SEARCH_INDEX_NAME
+        # Get all documents with embeddings from the collection
+        documents = list(collection.find(
+            {"embedding": {"$exists": True}},
+            {"text": 1, "embedding": 1, "_id": 0}
+        ))
         
-        # MongoDB Atlas Vector Search pipeline
-        # Note: Ensure your MongoDB Atlas collection has a vector search index configured
-        # The index should be on the "embedding" field (or adjust "path" below)
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": index_name,  # Use Math-specific index for Math collection
-                    "path": "embedding",  # Change this if your embedding field has a different name
-                    "queryVector": query_embedding,
-                    "numCandidates": limit * 10,  # Search more candidates for better results
-                    "limit": limit
-                }
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "text": 1,  # Change "text" if your content field has a different name
-                    "score": {"$meta": "vectorSearchScore"}
-                }
-            }
-        ]
+        if not documents:
+            print(f"No documents with embeddings found in collection: {collection_name}")
+            return []
         
-        results = list(collection.aggregate(pipeline))
-        return results
+        # Calculate cosine similarity for each document
+        results = []
+        for doc in documents:
+            doc_embedding = doc.get('embedding')
+            if doc_embedding and doc.get('text'):
+                similarity = cosine_similarity(query_embedding, doc_embedding)
+                results.append({
+                    'text': doc['text'],
+                    'score': similarity
+                })
+        
+        # Sort by score (highest first) and return top results
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return results[:limit]
+        
     except Exception as e:
         print(f"Error in vector search: {e}")
-        print(f"Collection: {collection_name}, Index: {index_name if 'index_name' in locals() else 'unknown'}")
-        print("Note: Ensure MongoDB Atlas Vector Search index is configured correctly")
-        # Return empty list if vector search fails
+        print(f"Collection: {collection_name}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
-def get_relevant_context(subject, user_query):
+def get_relevant_context(subject, user_query, min_score=0.3):
     """Get relevant context from embedded documents using vector search"""
     collection_name = COLLECTIONS.get(subject)
     if not collection_name:
+        print(f"DEBUG: No collection found for subject: {subject}")
         return []
     
-    # Generate embedding for user query
+    # Generate embedding for user query with correct dimensions
     query_embedding = generate_embedding(user_query)
     if not query_embedding:
+        print(f"DEBUG: Failed to generate embedding for query: {user_query}")
+        return []
+    
+    # Verify embedding dimensions match document structure
+    if len(query_embedding) != OPENAI_EMBEDDING_DIMENSIONS:
+        print(f"ERROR: Query embedding dimensions ({len(query_embedding)}) don't match expected ({OPENAI_EMBEDDING_DIMENSIONS})")
         return []
     
     # Perform vector search
     results = vector_search(collection_name, query_embedding)
     
-    # Extract text content from results
-    context_texts = [result.get('text', '') for result in results if result.get('text')]
+    # Debug logging
+    if results:
+        scores = [result.get('score', 0) for result in results]
+        print(f"DEBUG: Query: '{user_query}' | Collection: {collection_name} | Found {len(results)} results")
+        print(f"DEBUG: Scores: {[round(s, 4) for s in scores]}")
+        print(f"DEBUG: Max score: {round(max(scores), 4) if scores else 0}, Min score: {round(min(scores), 4) if scores else 0}")
+    else:
+        print(f"DEBUG: No results found for query: '{user_query}' in collection: {collection_name}")
+    
+    # Filter results by relevance score and extract text content
+    # Cosine similarity scores are between -1 and 1, typically 0-1 for normalized embeddings
+    # Lower threshold (0.3) to catch more relevant matches
+    filtered_results = [
+        result for result in results 
+        if result.get('score', 0) >= min_score and result.get('text')
+    ]
+    
+    # If filtering removed all results but we had some, use the top result anyway
+    # This handles cases where scores are lower than expected but still relevant
+    if not filtered_results and results:
+        print(f"DEBUG: All results filtered out by score threshold {min_score}, but using top result anyway")
+        top_result = results[0]  # Already sorted by score
+        if top_result.get('text'):
+            filtered_results = [top_result]
+    
+    context_texts = [result.get('text', '') for result in filtered_results]
+    print(f"DEBUG: Returning {len(context_texts)} context chunks after filtering")
     return context_texts
 
 
@@ -122,10 +163,14 @@ Your student-centered teaching philosophy:
 9. **Build confidence**: Use positive reinforcement like "You're getting the hang of this!" or "You're thinking like a scientist!"
 10. **Be conversational and warm**: Write like you're chatting with a friend who wants to learn, not lecturing
 
-Current topic context from the textbook:
+Current topic context from the Computer Science Grade 12 textbook (National Book Foundation, Federal Textbook Board):
 {context}
 
-IMPORTANT: You MUST ONLY answer questions based on the provided textbook context above. If a student asks about something that is NOT covered in the provided context, acknowledge their curiosity first, then gently redirect: "That's an interesting question! Unfortunately, that topic isn't covered in the material we're working with right now. But I'd love to help you understand what IS in the textbook - is there something specific from the material you'd like to explore?"
+CRITICAL INSTRUCTION: You MUST ONLY answer questions based on the provided textbook context above. The textbook is "Textbook of Computer Science Grade 12" published by National Book Foundation, Federal Textbook Board, Islamabad (2018). 
+
+If a student asks about something that is NOT covered in the provided context, acknowledge their curiosity first, then gently redirect: "That's an interesting question! Unfortunately, that topic isn't covered in the Grade 12 Computer Science textbook we're working with right now. But I'd love to help you understand what IS in the textbook - is there something specific from the material you'd like to explore?"
+
+You must NOT use any knowledge outside of what's provided in the context. All answers must be grounded strictly in the Computer Science Grade 12 textbook content provided above.
 
 Remember: The student is the hero of this learning story. Your role is to guide, support, and celebrate their growth. Keep responses conversational, warm, engaging, and always focused on helping THEM understand and succeed."""
 
@@ -167,7 +212,55 @@ def chat_api():
             return jsonify({'error': 'Invalid subject'}), 400
         
         # Get relevant context from vector search
-        context_texts = get_relevant_context(subject, user_message)
+        context_texts = get_relevant_context(subject, user_message, min_score=0.3)
+        
+        # Check if we have relevant context - if not, return out-of-domain message
+        if not context_texts:
+            out_of_domain_response = (
+                "That's an interesting question! Unfortunately, that topic isn't covered "
+                "in the material we're working with right now. I can only help you with "
+                f"questions about {subject} that are in the textbook. Is there something "
+                "specific from the material you'd like to explore?"
+            )
+            
+            # Still store the conversation for history
+            conversations_collection = db['conversations']
+            conversation_doc = conversations_collection.find_one({'conversation_id': conversation_id})
+            
+            conversation_data = {
+                'conversation_id': conversation_id,
+                'subject': subject,
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': user_message,
+                        'timestamp': datetime.utcnow()
+                    },
+                    {
+                        'role': 'assistant',
+                        'content': out_of_domain_response,
+                        'timestamp': datetime.utcnow()
+                    }
+                ],
+                'updated_at': datetime.utcnow()
+            }
+            
+            if conversation_doc:
+                conversations_collection.update_one(
+                    {'conversation_id': conversation_id},
+                    {
+                        '$push': {'messages': {'$each': conversation_data['messages']}},
+                        '$set': {'updated_at': datetime.utcnow()}
+                    }
+                )
+            else:
+                conversation_data['created_at'] = datetime.utcnow()
+                conversations_collection.insert_one(conversation_data)
+            
+            return jsonify({
+                'response': out_of_domain_response,
+                'conversation_id': conversation_id
+            })
         
         # Retrieve conversation history from database
         conversations_collection = db['conversations']
